@@ -3,7 +3,8 @@ import json
 import numpy as np
 import torch
 from torch import nn, optim
-from torch.utils.data import Dataset, DataLoader
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.utils.data import Dataset, DataLoader, random_split
 from tqdm import tqdm
 
 
@@ -229,12 +230,17 @@ def train():
     LR = 1e-3
     CLS_LOSS_WEIGHT = 1.0
     GRAD_CLIP_NORM = 1.0
+    VAL_RATIO = 0.1
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Data loading
+    # Data loading and partitioning
     dataset = DanmuSequenceDataset(DATA_DIR, seq_len=100)
-    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
-    print(f"Loaded {len(dataset)} videos for training.")
+    val_size = int(len(dataset) * VAL_RATIO)
+    train_size = len(dataset) - val_size
+    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+    train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    print(f"Loaded {len(dataset)} videos. Train: {len(train_dataset)}, Val: {len(val_dataset)}.")
 
     # Model initialization
     model = VideoSentimentTransformer(n_features=2, d_model=128, seq_len=100).to(DEVICE)
@@ -242,11 +248,24 @@ def train():
     recon_criterion = nn.MSELoss()
     cls_criterion = nn.MSELoss()
 
-    # Training loop
-    model.train()
+    # Initialize learning rate scheduler
+    # noinspection PyArgumentList
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
+
+    # Save the best validation loss
+    best_val_loss = float('inf')
+
+    # Training and validation cycle
     for epoch in range(EPOCHS):
-        total_loss = 0.0
-        for batch_data, _ in tqdm(dataloader, desc=f"Epoch {epoch + 1}/{EPOCHS}"):
+        model.train()
+        # Total training loss
+        total_train_loss = 0.0
+        # Training frequency count
+        train_count = 0
+
+        # Training progress bar
+        bar = tqdm(train_dataloader, desc=f"Epoch {epoch + 1}/{EPOCHS} [Train]", leave=False)
+        for batch_data, _ in bar:
             # Batch shape: [batch, 100, 2]
             original_seq = batch_data.to(DEVICE)
 
@@ -275,15 +294,64 @@ def train():
             torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP_NORM)
             optimizer.step()
 
-            total_loss += loss.item()
+            total_train_loss += loss.item()
+            train_count += 1
 
-        # Calculate the average printing loss
-        avg_loss = total_loss / len(dataloader)
-        print(f"Epoch {epoch + 1}/{EPOCHS}, Loss: {avg_loss:.6f}")
+            # Update the training loss displayed on the progress bar
+            bar.set_postfix({'loss': f"{loss.item():.4f}"})
+
+        # Model Validation
+        model.eval()
+        # Verification error
+        total_val_loss = 0.0
+        # Verification count
+        val_count = 0
+
+        # Verification steps
+        with torch.no_grad():
+            for batch_data, _ in val_dataloader:
+                # # Batch shape: [batch, 100, 2]
+                original_seq = batch_data.to(DEVICE)
+
+                # Generate mask
+                mask = mask_modeling(original_seq, mask_ratio=0.15, mean_span_length=5)
+
+                # Forward propagation
+                reconstructed_seq, _, cls_pred = model(original_seq, mask=mask)
+
+                # Only calculate the loss of the obscured position
+                mask_float = mask.unsqueeze(-1).float()
+                if mask_float.sum() > 0:
+                    recon_loss = recon_criterion(reconstructed_seq * mask_float, original_seq * mask_float)
+                else:
+                    recon_loss = recon_criterion(reconstructed_seq, original_seq)
+
+                # Calculate the cls loss
+                cls_loss = cls_criterion(cls_pred, original_seq.mean(dim=1))
+
+                # Calculate the total loss
+                loss = recon_loss + CLS_LOSS_WEIGHT * cls_loss
+
+                total_val_loss += loss.item()
+                val_count += 1
+
+        # Calculate the average loss
+        avg_train_loss = total_train_loss / max(1, train_count)
+        avg_val_loss = total_val_loss / max(1, val_count)
+
+        tqdm.write(f"Epoch {epoch + 1}/{EPOCHS} | Train Loss: {avg_train_loss:.6f} | Val Loss: {avg_val_loss:.6f}")
+
+        # Adjust learning rate based on verification loss
+        scheduler.step(avg_val_loss)
+
+        # Save the optimal model
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save(model.state_dict(), "danmu_transformer_best.pth")
 
     # Save the final model
-    torch.save(model.state_dict(), "danmu_transformer.pth")
-    print("Training Complete! Model saved.")
+    torch.save(model.state_dict(), "danmu_transformer_last.pth")
+    print("Training Complete! Best and Last models saved.")
 
 
 def inference(dataset_path, output_path, batch_size=64):
@@ -344,4 +412,4 @@ def inference(dataset_path, output_path, batch_size=64):
 
 if __name__ == "__main__":
     train()
-    # inference("simplified_vector_danmu.json", "transformer_vector_danmu.json")
+    # inference("simplified_vector_danmu_best.json", "transformer_vector_danmu.json")
