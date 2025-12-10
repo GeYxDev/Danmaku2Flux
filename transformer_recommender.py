@@ -2,6 +2,7 @@ import math
 import json
 import numpy as np
 import torch
+from matplotlib import pyplot as plt
 from torch import nn, optim
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import Dataset, DataLoader, random_split
@@ -48,7 +49,7 @@ class DanmuSequenceDataset(Dataset):
         sequence = np.stack([sentiment_vector, density_vector], axis=1)
 
         # Return the prepared single data
-        return torch.tensor(sequence, dtype=torch.float32), item.get('title', '')
+        return torch.tensor(sequence, dtype=torch.float32), item.get('title', ''), item.get('bv', '')
 
 
 class PositionalEncoding(nn.Module):
@@ -221,12 +222,12 @@ def mask_modeling(x, mask_ratio=0.15, mean_span_length=5):
 def train():
     """
     Model training process
-    :return: None
+    :return: Loss data for analysis
     """
     # Configuration item
     DATA_DIR = "simplified_vector_danmu.json"
     BATCH_SIZE = 32
-    EPOCHS = 50
+    EPOCHS = 100
     LR = 1e-3
     CLS_LOSS_WEIGHT = 1.0
     GRAD_CLIP_NORM = 1.0
@@ -249,11 +250,14 @@ def train():
     cls_criterion = nn.MSELoss()
 
     # Initialize learning rate scheduler
-    # noinspection PyArgumentList
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
 
     # Save the best validation loss
     best_val_loss = float('inf')
+
+    # Record the training loss and validation loss during the training process
+    train_loss_record = []
+    val_loss_record = []
 
     # Training and validation cycle
     for epoch in range(EPOCHS):
@@ -265,7 +269,7 @@ def train():
 
         # Training progress bar
         bar = tqdm(train_dataloader, desc=f"Epoch {epoch + 1}/{EPOCHS} [Train]", leave=False)
-        for batch_data, _ in bar:
+        for batch_data, _, _ in bar:
             # Batch shape: [batch, 100, 2]
             original_seq = batch_data.to(DEVICE)
 
@@ -309,7 +313,7 @@ def train():
 
         # Verification steps
         with torch.no_grad():
-            for batch_data, _ in val_dataloader:
+            for batch_data, _, _ in val_dataloader:
                 # # Batch shape: [batch, 100, 2]
                 original_seq = batch_data.to(DEVICE)
 
@@ -339,6 +343,10 @@ def train():
         avg_train_loss = total_train_loss / max(1, train_count)
         avg_val_loss = total_val_loss / max(1, val_count)
 
+        # Record losses during the training process
+        train_loss_record.append(avg_train_loss)
+        val_loss_record.append(avg_val_loss)
+
         tqdm.write(f"Epoch {epoch + 1}/{EPOCHS} | Train Loss: {avg_train_loss:.6f} | Val Loss: {avg_val_loss:.6f}")
 
         # Adjust learning rate based on verification loss
@@ -352,6 +360,9 @@ def train():
     # Save the final model
     torch.save(model.state_dict(), "danmu_transformer_last.pth")
     print("Training Complete! Best and Last models saved.")
+
+    # Return loss for analysis
+    return train_loss_record, val_loss_record
 
 
 def inference(dataset_path, output_path, batch_size=64):
@@ -380,7 +391,7 @@ def inference(dataset_path, output_path, batch_size=64):
 
     # Conversion processing
     with torch.no_grad():
-        for batch_data, batch_titles in tqdm(dataloader, desc="Processing"):
+        for batch_data, batch_titles, batch_bvs in tqdm(dataloader, desc="Processing"):
             original_seq = batch_data.to(device)
             current_batch_size = batch_data.size(0)
 
@@ -400,6 +411,7 @@ def inference(dataset_path, output_path, batch_size=64):
             for i in range(len(batch_titles)):
                 all_convert_results.append({
                     "title": batch_titles[i],
+                    "bv": batch_bvs[i],
                     "embedding": cls_avg[i].tolist()
                 })
 
@@ -410,6 +422,32 @@ def inference(dataset_path, output_path, batch_size=64):
         json.dump(all_convert_results, f, ensure_ascii=False, indent=None)
 
 
+def plot_loss_curves(train_losses, val_losses, save_path='loss_curve.png'):
+    """
+    Draw training and validation loss curves and save them
+    :param train_losses: List of losses during the training process
+    :param val_losses: List of losses in the verification process
+    :param save_path: Chart saving path
+    """
+    plt.figure(figsize=(10, 6))
+
+    # Draw training loss and validation loss curves
+    plt.plot(train_losses, label='Training Loss', color='#1f77b4', linewidth=2)
+    plt.plot(val_losses, label='Validation Loss', color='#ff7f0e', linewidth=2, linestyle='--')
+
+    # Set chart details
+    plt.title('Training vs Validation Loss', fontsize=14)
+    plt.xlabel('Epochs', fontsize=12)
+    plt.ylabel('Loss', fontsize=12)
+    plt.legend(fontsize=12)
+    plt.grid(True, alpha=0.3)
+
+    # Save chart
+    plt.savefig(save_path, dpi=300)
+    print(f"Loss curve saved successfully to: {save_path}.")
+
+
 if __name__ == "__main__":
-    train()
+    train_loss_list, val_losses_list = train()
+    plot_loss_curves(train_loss_list, val_losses_list)
     # inference("simplified_vector_danmu_best.json", "transformer_vector_danmu.json")

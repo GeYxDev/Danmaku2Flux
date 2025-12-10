@@ -17,9 +17,10 @@ def merge_vectors_to_single_file(input_dir, output_file):
                 data = json.load(f)
                 for vid_key, content in data.items():
                     title = content.get('title', 'Unknown')
+                    bv = content.get('bv', '')
                     vector = content.get('feature_vector', [])
                     if vector and len(vector) == 200:
-                        all_vectors_data.append({"title": title, "vector": vector})
+                        all_vectors_data.append({"title": title, "bv": bv, "vector": vector})
                         video_count += 1
         except Exception as e:
             print(f"Error reading {file_path}: {e}")
