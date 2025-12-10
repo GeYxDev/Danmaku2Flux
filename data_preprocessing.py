@@ -200,9 +200,9 @@ class TransformerDataPreprocessor:
 
 if __name__ == "__main__":
     # Enter folder path
-    INPUT_DIR = "raw_danmu_data"
+    INPUT_DIR = "danmu_data_115"
     # Output folder path
-    OUTPUT_DIR = "processed_dataset"
+    OUTPUT_DIR = "processed_danmu_data_115"
     # Stop using the vocabulary path
     STOPWORDS_FILE = 'stopwords.txt'
 
