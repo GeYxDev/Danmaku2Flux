@@ -40,13 +40,14 @@ class DanmuSequenceDataset(Dataset):
 
         # Split emotion vector and density vector
         sentiment_vector = combined_vector[:self.seq_len]
-        density_vector = combined_vector[self.seq_len:]
+        # The density vector should maintain the same range as the emotion vector
+        density_vector = combined_vector[self.seq_len:] * 2.0 - 1.0
 
         # Vector stacking
         sequence = np.stack([sentiment_vector, density_vector], axis=1)
 
         # Return the prepared single data
-        return torch.tensor(sequence), item.get('title', '')
+        return torch.tensor(sequence, dtype=torch.float32), item.get('title', '')
 
 
 class PositionalEncoding(nn.Module):
@@ -91,24 +92,41 @@ class VideoSentimentTransformer(nn.Module):
         """
         super(VideoSentimentTransformer, self).__init__()
 
-        # Linear embedding layer: [batch, 100, 2] -> [batch, 100, 128]
-        self.input_embedding = nn.Linear(n_features, d_model)
+        # Input Projection Layer: [batch, 100, 2] -> [batch, 100, 128]
+        self.input_embedding = nn.Sequential(
+            nn.Linear(n_features, d_model),
+            nn.GELU(),
+            nn.LayerNorm(d_model)
+        )
         # Learnable classification markers: [1, 1, 128]
         self.cls_token = nn.Parameter(torch.randn(1, 1, d_model))
+        nn.init.trunc_normal_(self.cls_token, std=0.02)
+        # Mask Layer: [1, 1, 128]
+        self.mask_token = nn.Parameter(torch.randn(1, 1, d_model))
+        nn.init.trunc_normal_(self.mask_token, std=0.02)
         # Positional encoding: 100 input tokens + 1 CLS token
         self.pos_encoder = PositionalEncoding(d_model, max_len=seq_len + 1)
 
         # Transformer encoder: Capture long-range dependencies
-        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=n_head, batch_first=True)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=n_head, batch_first=True, norm_first=True)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
         # Decode head: Restore 128 dimensional features back to 2D
         self.decoder_head = nn.Linear(d_model, n_features)
 
-    def forward(self, x):
+        # CLS head: Responsible for overall emotional judgment
+        self.cls_head = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.Linear(d_model, 64),
+            nn.GELU(),
+            nn.Linear(64, n_features)
+        )
+
+    def forward(self, x, mask=None):
         """
         Forward propagation process
         :param x: Batch of video emotional feature sequences
+        :param mask: Masks used during the training process
         :return: Reconstructed sequence and video sentiment labels
         """
         # x: [batch, 100, 2]
@@ -116,6 +134,15 @@ class VideoSentimentTransformer(nn.Module):
 
         # Embedding: [batch, 100, 2] -> [batch, 100, 128]
         x = self.input_embedding(x)
+
+        # Masking: [batch, 100, 128] -> [batch, 101, 128]
+        if mask is not None:
+            mask_bool = mask.bool()
+            if mask_bool.any():
+                # Expand mask_token to [batch, 100, 128] and overwrite positions
+                mask_token_expanded = self.mask_token.expand(batch_size, x.size(1), -1)
+                # Using Boolean index assignment
+                x[mask_bool] = mask_token_expanded[mask_bool]
 
         # Add CLS Token: [batch, 100, 128] -> [batch, 101, 128]
         cls_tokens = self.cls_token.expand(batch_size, -1, -1)
@@ -135,27 +162,59 @@ class VideoSentimentTransformer(nn.Module):
         # Retrieve the last 100 tokens to restore the original data -> [batch, 100, 2]
         reconstructed_seq = self.decoder_head(transformer_output[:, 1:, :])
 
+        # CLS regression prediction
+        cls_pred = self.cls_head(video_vector)
+
         # Return the reconstructed sequence and video sentiment labels
-        return reconstructed_seq, video_vector
+        return reconstructed_seq, video_vector, cls_pred
 
 
-def mask_modeling(x, mask_ratio=0.15):
+def mask_modeling(x, mask_ratio=0.15, mean_span_length=5):
     """
     Mask modeling enables models to learn how to mask data
     :param x: Input data
     :param mask_ratio: Mask coverage rate
-    :return: Partially covered data
+    :param mean_span_length: Average continuous occlusion time step
+    :return: Partially obscured mask
     """
+    batch, seq_len, feats = x.shape
+
     # Generate cover
-    mask = torch.rand(x.shape[:2]) < mask_ratio
-    # Match feature dimensions
-    mask = mask.unsqueeze(-1).to(x.device)
+    mask = torch.zeros(batch, seq_len, dtype=torch.bool, device=x.device)
 
-    # Covering the data
-    x_masked = x * (1 - mask.float())
+    # At least the number of tokens that need to be masked for each sample
+    n_mask = max(1, int(seq_len * mask_ratio))
 
-    # Return processed data
-    return x_masked
+    # Generate masks for each batch
+    for b in range(batch):
+        # Current number of masks
+        current_masked = 0
+        # Attempt count
+        attempts = 0
+
+        # Generate a mask until it meets the requirements
+        while current_masked < n_mask and attempts < seq_len * 3:
+            # Randomly generate mask length
+            span_len = max(1, int(np.round(np.random.normal(mean_span_length, 2))))
+
+            # Randomly select the starting position
+            if seq_len - span_len <= 0:
+                start = 0
+            else:
+                start = np.random.randint(0, seq_len - span_len + 1)
+
+            # Only count the positions within the span that have not been obscured yet
+            span_idx = torch.arange(start, start + span_len, device=mask.device)
+            # noinspection PyUnresolvedReferences
+            new_positions = (~mask[b, span_idx]).sum().item()
+            mask[b, span_idx] = True
+
+            # Update to mask quantity
+            current_masked += new_positions
+            attempts += 1
+
+    # Return partially obscured mask
+    return mask
 
 
 def train():
@@ -168,6 +227,8 @@ def train():
     BATCH_SIZE = 32
     EPOCHS = 50
     LR = 1e-3
+    CLS_LOSS_WEIGHT = 1.0
+    GRAD_CLIP_NORM = 1.0
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Data loading
@@ -178,28 +239,40 @@ def train():
     # Model initialization
     model = VideoSentimentTransformer(n_features=2, d_model=128, seq_len=100).to(DEVICE)
     optimizer = optim.AdamW(model.parameters(), lr=LR)
-    criterion = nn.MSELoss()
+    recon_criterion = nn.MSELoss()
+    cls_criterion = nn.MSELoss()
 
     # Training loop
     model.train()
     for epoch in range(EPOCHS):
-        total_loss = 0
+        total_loss = 0.0
         for batch_data, _ in tqdm(dataloader, desc=f"Epoch {epoch + 1}/{EPOCHS}"):
             # Batch shape: [batch, 100, 2]
             original_seq = batch_data.to(DEVICE)
 
-            # Manufacturing obscured data
-            masked_data = mask_modeling(original_seq, mask_ratio=0.15)
+            # Generate mask
+            mask = mask_modeling(original_seq, mask_ratio=0.15, mean_span_length=5)
 
             # Forward propagation
-            reconstructed_seq, _ = model(masked_data)
+            reconstructed_seq, _, cls_pred = model(original_seq, mask=mask)
 
-            # Calculate the loss
-            loss = criterion(reconstructed_seq, original_seq)
+            # Only calculate the loss of the obscured position
+            float_mask = mask.unsqueeze(-1).float()
+            if float_mask.sum() > 0:
+                recon_loss = recon_criterion(reconstructed_seq * float_mask, original_seq * float_mask)
+            else:
+                recon_loss = recon_criterion(reconstructed_seq, original_seq)
+
+            # Calculate the cls loss
+            cls_loss = cls_criterion(cls_pred, original_seq.mean(dim=1))
+
+            # Calculate the total loss
+            loss = recon_loss + CLS_LOSS_WEIGHT * cls_loss
 
             # Backpropagation
             optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP_NORM)
             optimizer.step()
 
             total_loss += loss.item()
@@ -241,18 +314,25 @@ def inference(dataset_path, output_path, batch_size=64):
     with torch.no_grad():
         for batch_data, batch_titles in tqdm(dataloader, desc="Processing"):
             original_seq = batch_data.to(device)
+            current_batch_size = batch_data.size(0)
 
-            # Model inference
-            _, video_vectors = model(original_seq)
+            # Initialize accumulator
+            cls_accum = torch.zeros(current_batch_size, model.cls_token.shape[-1], device=device)
+
+            # Create a CLS vector for accumulating all zero tensors 8 times for inference
+            for _ in range(8):
+                mask = mask_modeling(original_seq, mask_ratio=0.15, mean_span_length=5)
+                _, video_vectors, _ = model(original_seq, mask=mask)
+                cls_accum += video_vectors
 
             # Transfer inference results to CPU
-            video_vectors_cpu = video_vectors.cpu().numpy()
+            cls_avg = (cls_accum / float(8)).cpu().numpy()
 
             # Save conversion results
             for i in range(len(batch_titles)):
                 all_convert_results.append({
                     "title": batch_titles[i],
-                    "reconstructed_vector": video_vectors_cpu[i].tolist()
+                    "embedding": cls_avg[i].tolist()
                 })
 
     # Save results to local file
