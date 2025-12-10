@@ -171,14 +171,14 @@ class TransformerDataPreprocessor:
                 bin_idx = min(int((timestamp / duration) * self.num_bins), self.num_bins - 1)
 
                 # Place the barrage in the corresponding bucket
-                bins[bin_idx].extend(tokens)
+                bins[bin_idx].append(tokens)
 
             # Save the processed barrage
             processed_data[video_key] = {
                 "title": info.get('title'),
                 "bv": info.get('bv'),
                 "duration": duration,
-                # List[List[str]] for time ordered barrage distribution
+                # List[List[List[str]]] for time ordered barrage distribution
                 "tokenized_bins": bins
             }
 
