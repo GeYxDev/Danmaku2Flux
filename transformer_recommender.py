@@ -2,6 +2,7 @@ import math
 import json
 import numpy as np
 import torch
+import torch.nn.functional as F
 from matplotlib import pyplot as plt
 from torch import nn, optim
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -121,7 +122,7 @@ class VideoSentimentTransformer(nn.Module):
             nn.LayerNorm(d_model),
             nn.Linear(d_model, 64),
             nn.GELU(),
-            nn.Linear(64, n_features)
+            nn.Linear(64, 8)
         )
 
     def forward(self, x, mask=None):
@@ -229,7 +230,9 @@ def train():
     BATCH_SIZE = 64
     EPOCHS = 100
     LR = 5e-4
-    CLS_LOSS_WEIGHT = 0.0
+    CLS_LOSS_WEIGHT = 0.01
+    CONTRAST_WEIGHT = 1.0
+    TEMPERATURE = 0.1
     GRAD_CLIP_NORM = 1.0
     VAL_RATIO = 0.1
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -274,23 +277,41 @@ def train():
             original_seq = batch_data.to(DEVICE)
 
             # Generate mask
-            mask = mask_modeling(original_seq, mask_ratio=0.50, mean_span_length=15)
+            mask1 = mask_modeling(original_seq, mask_ratio=0.30, mean_span_length=12)
+            mask2 = mask_modeling(original_seq, mask_ratio=0.30, mean_span_length=12)
 
             # Forward propagation
-            reconstructed_seq, _, cls_pred = model(original_seq, mask=mask)
+            reconstructed_seq1, video_vector1, cls_pred1 = model(original_seq, mask=mask1)
+            reconstructed_seq2, video_vector2, cls_pred2 = model(original_seq, mask=mask2)
 
             # Only calculate the loss of the obscured position
-            float_mask = mask.unsqueeze(-1).float()
-            if float_mask.sum() > 0:
-                recon_loss = recon_criterion(reconstructed_seq * float_mask, original_seq * float_mask)
+            float_mask1 = mask1.unsqueeze(-1).float()
+            float_mask2 = mask2.unsqueeze(-1).float()
+            if float_mask1.sum() > 0 and float_mask2.sum() > 0:
+                recon_loss = (recon_criterion(reconstructed_seq1 * float_mask1, original_seq * float_mask1) +
+                              recon_criterion(reconstructed_seq2 * float_mask2, original_seq * float_mask2)) * 0.5
             else:
-                recon_loss = recon_criterion(reconstructed_seq, original_seq)
+                recon_loss = (recon_criterion(reconstructed_seq1, original_seq) +
+                              recon_criterion(reconstructed_seq2, original_seq)) * 0.5
 
             # Calculate the cls loss
-            cls_loss = cls_criterion(cls_pred, original_seq.mean(dim=1))
+            cls_target = torch.cat([
+                original_seq.mean(dim=1),
+                original_seq.std(dim=1),
+                original_seq.max(dim=1).values,
+                original_seq.min(dim=1).values
+            ], dim=1).detach()
+            cls_loss = (cls_criterion(cls_pred1, cls_target) + cls_criterion(cls_pred2, cls_target)) * 0.5
+
+            # Calculate consistency loss
+            video_vector1 = nn.functional.normalize(video_vector1, dim=1)
+            video_vector2 = nn.functional.normalize(video_vector2, dim=1)
+            logits = (video_vector1 @ video_vector2.T) / TEMPERATURE
+            labels = torch.arange(logits.size(0), device=DEVICE)
+            cont_loss = (F.cross_entropy(logits, labels) + F.cross_entropy(logits.T, labels)) * 0.5
 
             # Calculate the total loss
-            loss = recon_loss + CLS_LOSS_WEIGHT * cls_loss
+            loss = recon_loss + CLS_LOSS_WEIGHT * cls_loss + CONTRAST_WEIGHT * cont_loss
 
             # Backpropagation
             optimizer.zero_grad()
@@ -318,7 +339,7 @@ def train():
                 original_seq = batch_data.to(DEVICE)
 
                 # Generate mask
-                mask = mask_modeling(original_seq, mask_ratio=0.50, mean_span_length=15)
+                mask = mask_modeling(original_seq, mask_ratio=0.30, mean_span_length=12)
 
                 # Forward propagation
                 reconstructed_seq, _, cls_pred = model(original_seq, mask=mask)
@@ -331,7 +352,13 @@ def train():
                     recon_loss = recon_criterion(reconstructed_seq, original_seq)
 
                 # Calculate the cls loss
-                cls_loss = cls_criterion(cls_pred, original_seq.mean(dim=1))
+                cls_target = torch.cat([
+                    original_seq.mean(dim=1),
+                    original_seq.std(dim=1),
+                    original_seq.max(dim=1).values,
+                    original_seq.min(dim=1).values
+                ], dim=1).detach()
+                cls_loss = cls_criterion(cls_pred, cls_target)
 
                 # Calculate the total loss
                 loss = recon_loss + CLS_LOSS_WEIGHT * cls_loss
@@ -389,30 +416,35 @@ def inference(dataset_path, output_path, batch_size=64):
     # Store the converted video sentiment tags and video titles
     all_convert_results = []
 
+    # Set the smoothing coefficient for the exponential moving average
+    ema = 0.6
+
     # Conversion processing
     with torch.no_grad():
         for batch_data, batch_titles, batch_bvs in tqdm(dataloader, desc="Processing"):
             original_seq = batch_data.to(device)
-            current_batch_size = batch_data.size(0)
 
-            # Initialize accumulator
-            cls_accum = torch.zeros(current_batch_size, model.cls_token.shape[-1], device=device)
+            # Initialize the sliding average of the index
+            cls_ema = None
 
-            # Create a CLS vector for accumulating all zero tensors 8 times for inference
+            # Loop multiple mask inference and exponential smoothing to obtain stable video feature vectors
             for _ in range(8):
-                mask = mask_modeling(original_seq, mask_ratio=0.50, mean_span_length=15)
+                mask = mask_modeling(original_seq, mask_ratio=0.30, mean_span_length=12)
                 _, video_vectors, _ = model(original_seq, mask=mask)
-                cls_accum += video_vectors
+                if cls_ema is None:
+                    cls_ema = video_vectors
+                else:
+                    cls_ema = ema * cls_ema + (1 - ema) * video_vectors
 
             # Transfer inference results to CPU
-            cls_avg = (cls_accum / float(8)).cpu().numpy()
+            cls_out = cls_ema.cpu().numpy()
 
             # Save conversion results
             for i in range(len(batch_titles)):
                 all_convert_results.append({
                     "title": batch_titles[i],
                     "bv": batch_bvs[i],
-                    "embedding": cls_avg[i].tolist()
+                    "embedding": cls_out[i].tolist()
                 })
 
     # Save results to local file
