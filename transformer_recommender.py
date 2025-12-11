@@ -226,10 +226,10 @@ def train():
     """
     # Configuration item
     DATA_DIR = "simplified_vector_danmu.json"
-    BATCH_SIZE = 32
+    BATCH_SIZE = 64
     EPOCHS = 100
-    LR = 1e-3
-    CLS_LOSS_WEIGHT = 1.0
+    LR = 5e-4
+    CLS_LOSS_WEIGHT = 0.0
     GRAD_CLIP_NORM = 1.0
     VAL_RATIO = 0.1
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -274,7 +274,7 @@ def train():
             original_seq = batch_data.to(DEVICE)
 
             # Generate mask
-            mask = mask_modeling(original_seq, mask_ratio=0.15, mean_span_length=5)
+            mask = mask_modeling(original_seq, mask_ratio=0.50, mean_span_length=15)
 
             # Forward propagation
             reconstructed_seq, _, cls_pred = model(original_seq, mask=mask)
@@ -318,7 +318,7 @@ def train():
                 original_seq = batch_data.to(DEVICE)
 
                 # Generate mask
-                mask = mask_modeling(original_seq, mask_ratio=0.15, mean_span_length=5)
+                mask = mask_modeling(original_seq, mask_ratio=0.50, mean_span_length=15)
 
                 # Forward propagation
                 reconstructed_seq, _, cls_pred = model(original_seq, mask=mask)
@@ -378,7 +378,7 @@ def inference(dataset_path, output_path, batch_size=64):
 
     # Load model
     model = VideoSentimentTransformer(n_features=2, d_model=128, seq_len=100)
-    model.load_state_dict(torch.load("danmu_transformer.pth", map_location=device))
+    model.load_state_dict(torch.load("danmu_transformer_best.pth", map_location=device))
     model.to(device)
     model.eval()
 
@@ -400,7 +400,7 @@ def inference(dataset_path, output_path, batch_size=64):
 
             # Create a CLS vector for accumulating all zero tensors 8 times for inference
             for _ in range(8):
-                mask = mask_modeling(original_seq, mask_ratio=0.15, mean_span_length=5)
+                mask = mask_modeling(original_seq, mask_ratio=0.50, mean_span_length=15)
                 _, video_vectors, _ = model(original_seq, mask=mask)
                 cls_accum += video_vectors
 
@@ -448,6 +448,6 @@ def plot_loss_curves(train_losses, val_losses, save_path='loss_curve.png'):
 
 
 if __name__ == "__main__":
-    train_loss_list, val_losses_list = train()
-    plot_loss_curves(train_loss_list, val_losses_list)
-    # inference("simplified_vector_danmu_best.json", "transformer_vector_danmu.json")
+    # train_loss_list, val_losses_list = train()
+    # plot_loss_curves(train_loss_list, val_losses_list)
+    inference("simplified_vector_danmu.json", "transformer_vector_danmu.json")
