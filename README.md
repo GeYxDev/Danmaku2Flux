@@ -78,4 +78,4 @@ python transformer_recommender.py --mode inference
 python check_embedding_quality.py
 ```
 
-**Subsequent Updates:** Only repeat steps 1-2-4-5 for incremental vector library updates
+**Subsequent Updates:** Only repeat steps 1-2-3-5 for incremental vector library updates
