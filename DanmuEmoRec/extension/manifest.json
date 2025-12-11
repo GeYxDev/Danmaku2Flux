@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "DanmuEmoRec",
+  "version": "1.0",
+  "description": "Calculate emotional changes in videos and recommend videos of interest to you.",
+  "permissions": ["activeTab"],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Obtain videos with similar emotions"
+  }
+}
