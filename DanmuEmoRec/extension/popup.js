@@ -31,18 +31,30 @@ document.addEventListener('DOMContentLoaded', function() {
     btn.disabled = true;
     list.innerHTML = '';
     loading.style.display = 'block';
+    loading.textContent = "Extracting emotions & Searching...";
 
     try {
-      const response = await fetch(`http://127.0.0.1:8000/recommend?bvid=${bvid}`);
+      const response = await fetch(`http://127.0.0.1:8000/recommend?bv=${bvid}`);
       const result = await response.json();
 
       loading.style.display = 'none';
       btn.disabled = false;
 
-      if (result.status === 'success') {
-        renderList(result.data);
+      if (response.ok) {
+        if (result.code === 200 && result.data.length > 0) {
+           renderList(result.data);
+        } else {
+           showMessage(result.message || "No similar videos found.", "orange");
+        }
       } else {
-        list.innerHTML = `<li style="color:red">An error occurred: ${result.detail}</li>`;
+        const errorMsg = result.message || `Error: ${response.statusText}`;
+        if (result.code === 404) {
+             showMessage(errorMsg, "#666");
+        } else if (result.code === 422) {
+             showMessage(errorMsg, "#d9534f");
+        } else {
+             showMessage("Server Error: " + errorMsg, "red");
+        }
       }
     } catch (error) {
       console.error(error);
@@ -52,6 +64,11 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   }
 
+  // Display text information
+  function showMessage(msg, color) {
+      list.innerHTML = `<li style="color:${color}; padding: 10px; text-align: center;">${msg}</li>`;
+  }
+  
   // Rendering recommendation list
   function renderList(videos) {
     if (videos.length === 0) {

@@ -1,11 +1,28 @@
+from contextlib import asynccontextmanager
+import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from core.database import db
+from core.database import videoSentimentVectorDatabase
 from core.pipeline import RecommendationPipeline
 
-app = FastAPI()
 
-# 允许跨域
+# Lifecycle manager
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    """
+    Application lifecycle manager
+    :param application: Reference of application instances
+    :return: None
+    """
+    print("Initializing database...")
+    videoSentimentVectorDatabase.load_video_data("transformer_vector_danmu.json")
+    yield
+    print("Close the application and release resources...")
+
+# Initialize FastAPI application
+app = FastAPI(title="Bilibili Video Emotion Recommender", lifespan=lifespan)
+
+# Configure cross domain resource sharing
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,35 +31,52 @@ app.add_middleware(
 )
 
 
-# 启动时加载一次数据库
-@app.on_event("startup")
-async def startup_event():
-    db.load_data("database.json")
-
-
+# GET method to obtain recommendation list
 @app.get("/recommend")
-async def recommend_api(bvid: str):
-    if not bvid:
-        raise HTTPException(status_code=400, detail="BVID is required")
+async def recommend_api(bv: str):
+    """
+    Video recommendation interface
+    :param bv: Recommend similar videos based on this video
+    :return: Service response results
+    """
+    # Exception handling when bv is empty
+    if not bv:
+        raise HTTPException(status_code=400, detail="BV number cannot be empty")
 
+    # Call the video emotion recommendation system pipeline
     try:
-        # ✅ 所有的复杂逻辑都封装在 Pipeline 里了
-        # 就像工厂流水线一样：输入原材料(bvid) -> 产出成品(list)
-        pipeline = RecommendationPipeline(bvid)
+        pipeline = RecommendationPipeline(bv=bv)
         results = pipeline.run()
 
+        # Return the reason for the error when it occurs
+        if pipeline.context.get("error") != "":
+            return {
+                "code": 422,
+                "status": "failed",
+                "message": pipeline.context["error"],
+                "data": []
+            }
+
+        # Return results without similar videos
+        if not results:
+            return {
+                "code": 404,
+                "status": "success",
+                "message": "Calculated successfully but no similar videos found in database.",
+                "data": []
+            }
+
+        # Return information normally when receiving recommendation results
         return {
+            "code": 200,
             "status": "success",
-            "data": results,
-            "source": "cache" if pipeline.context.get('vector') == db.find_vector_by_bvid(bvid) else "realtime"
+            "data": results
         }
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Server Error processing {bv}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)

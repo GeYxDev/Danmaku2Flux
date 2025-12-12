@@ -1,55 +1,120 @@
-from .database import db
-from .services import CrawlerService, model_service
+from .database import videoSentimentVectorDatabase
+from .services import (
+    DanmakuCrawlerService,
+    transformerDataPreprocessor,
+    sentimentAnalyzerService,
+    transformerRecommendModelService
+)
 
 
 class RecommendationPipeline:
-    def __init__(self, bvid):
-        self.bvid = bvid
-        # 上下文：用于在管道各阶段传递数据
+    """
+    Video emotion recommendation system processing pipeline
+    """
+    def __init__(self, bv):
+        """
+        Initialize recommendation system processing pipeline
+        :param bv: The BV number used for recommending reference videos
+        """
+        self.bv = bv
+        # A data structure used to transmit data at various stages of a pipeline
         self.context = {
-            "bvid": bvid,
-            "vector": None,  # 核心中间态：情感向量
-            "recommendations": []  # 最终结果
+            "bv": bv,
+            "vector": None,
+            "recommendations": [],
+            "error": ""
         }
 
     def run(self):
-        """执行管道流"""
-        # 步骤 1: 检查缓存
+        """
+        Start the video emotional recommendation pipeline flow
+        :return: Video recommendation results
+        """
+        print(f"[Pipeline] Start processing task: {self.bv}.")
+
+        # Ensure that the database is loaded
+        videoSentimentVectorDatabase.load_video_data()
+
+        # Check database cache
         self._step_check_database()
 
-        # 步骤 2: (如果没缓存) 获取数据 & 步骤 3: 计算向量
+        # Generate video emotion embedding vectors from raw barrage data
         if self.context["vector"] is None:
             self._step_fetch_and_compute()
 
-        # 步骤 4: 向量搜索
+        # Vector search for similar videos
         self._step_search()
 
+        # Return video recommendation results
         return self.context["recommendations"]
 
     def _step_check_database(self):
-        """Stage 1: 查库"""
-        cached_vector = db.find_vector_by_bvid(self.bvid)
+        """
+        Check if there is a vector pointed to by this BV number in the current database
+        :return: None
+        """
+        cached_vector = videoSentimentVectorDatabase.find_vector_by_bv(self.bv)
         if cached_vector:
-            print("⚡ [Pipeline] 命中数据库缓存，跳过计算。")
+            print("[Pipeline] Hit database cache, skip real-time calculation.")
             self.context["vector"] = cached_vector
 
     def _step_fetch_and_compute(self):
-        """Stage 2 & 3: 爬虫 + 模型"""
-        print("🐢 [Pipeline] 未命中缓存，启动实时计算流程...")
-        # 2.1 爬取
-        danmaku_list = CrawlerService.fetch_danmaku(self.bvid)
-        # 2.2 计算
-        vector = model_service.predict(danmaku_list)
-        self.context["vector"] = vector
+        """
+        Pipeline flow starting from crawlers
+        :return: None
+        """
+        print("[Pipeline] Failed to hit cache, start real-time calculation process.")
 
-        # (可选) 2.3: 这里可以把新计算的结果存回 database.json，实现“越用越快”
+        # Crawler retrieves raw barrage data
+        danmaku_list = DanmakuCrawlerService.fetch_danmaku(self.bv)
+        if not danmaku_list:
+            print("[Pipeline] Crawling failed or no barrage, terminate the process.")
+            self.context["error"] = "Failed to obtain danmaku"
+            return
+
+        # Preprocessing of raw barrage data
+        processed_data = transformerDataPreprocessor.process(danmaku_list, bv=self.bv)
+        if not processed_data:
+            print("[Pipeline] Preprocessing failed, terminate process.")
+            self.context["error"] = "Insufficient danmaku for pre-processing"
+            return
+
+        # Perform sentiment analysis on preprocessed dataPerform sentiment analysis on preprocessed data
+        sentiment_data = sentimentAnalyzerService.process_video_by_danmu(processed_data)
+        if not sentiment_data or "feature_vector" not in sentiment_data:
+            print("[Pipeline] Emotional feature extraction failed, terminate process.")
+            self.context["error"] = "Unable to extract danmaku emotions"
+            return
+
+        raw_feature_vector = sentiment_data["feature_vector"]
+
+        # Convert the original vector into an embedded vector through the model
+        # noinspection PyBroadException
+        try:
+            feature_vector = transformerRecommendModelService.predict(raw_feature_vector)
+
+            # Save the generated embedding vector
+            self.context["vector"] = feature_vector
+            print("[Pipeline] Real time calculation completed, vector generated.")
+
+        except Exception:
+            print("[Pipeline] Model inference failed, terminate process.")
+            self.context["error"] = "Unable to extract emotional features from the video"
 
     def _step_search(self):
-        """Stage 4: 相似度匹配"""
-        if self.context["vector"]:
-            results = db.search_similar(
-                self.context["vector"],
-                top_k=5,
-                exclude_bvid=self.bvid
-            )
+        """
+        Vector similarity matching
+        :return: None
+        """
+        target_vector = self.context["vector"]
+
+        # Search if there is an embedded vector present
+        if target_vector:
+            # Call the search function in the database
+            results = videoSentimentVectorDatabase.search_similar_vectors(target_vector, top_k=5, exclude_bv=self.bv)
             self.context["recommendations"] = results
+            print(f"[Pipeline] Search completed, found {len(results)} related videos.")
+        else:
+            print("[Pipeline] The vector is empty, unable to perform search.")
+            if self.context["error"] == "":
+                self.context["error"] = "Vector missing cannot perform search"
