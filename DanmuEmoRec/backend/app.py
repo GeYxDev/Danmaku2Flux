@@ -7,11 +7,11 @@ from core.pipeline import RecommendationPipeline
 
 
 # Lifecycle manager
+# noinspection PyUnusedLocal
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     """
     Application lifecycle manager
-    :param application: Reference of application instances
     :return: None
     """
     print("Initializing database...")

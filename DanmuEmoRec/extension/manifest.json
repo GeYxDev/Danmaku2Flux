@@ -3,7 +3,7 @@
   "name": "DanmuEmoRec",
   "version": "1.0",
   "description": "Calculate emotional changes in videos and recommend videos of interest to you.",
-  "permissions": ["activeTab"],
+  "permissions": ["activeTab", "storage"],
   "host_permissions": [
     "http://127.0.0.1:8000/*"
   ],

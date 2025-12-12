@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+requests
+numpy
+scipy
+scikit-learn
+jieba
+snownlp
+torch

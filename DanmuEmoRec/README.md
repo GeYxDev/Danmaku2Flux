@@ -12,40 +12,43 @@ DanmuEmoRec is a recommendation system that analyzes video sentiment through dan
 
 ## Features
 
-- 🎯 **Sentiment Analysis**: Analyzes video sentiment changes through danmu text, generating 128-dimensional sentiment vectors
-- 🔌 **Browser Extension**: One-click recommendation trigger, seamlessly integrated into the Bilibili viewing experience
-- 🤖 **Intelligent Matching**: Calculates video similarity based on Transformer models for precise recommendations
-- ⚡ **Real-time Response**: Average time from click to recommendation < 5 seconds
+- 🎯 **Sentiment Analysis**: Analyzes video sentiment changes through danmu text using SnowNLP and Transformer models.
+- 🔌 **Browser Extension**: One-click recommendation trigger, seamlessly integrated into the Bilibili viewing experience.
+- 🤖 **Intelligent Matching**: Uses a specialized Transformer model (`danmu_transformer_best.pth`) to generate 128-dimensional sentiment vectors.
+- ⚡ **Real-time Response**: Fast retrieval using a pre-computed vector database (`transformer_vector_danmu.json`).
 
 ---
 
 ## Project Structure
 
-```
+```text
 DanmuEmoRec/
-├── backend/                 # Python Backend Service
-│   ├── app.py              # Flask Main Application
-│   ├── danmu_fetcher.py    # Danmu Fetcher Module
-│   ├── sentiment_analyzer.py # Sentiment Analyzer Module
-│   ├── transformer_model.py # Vector Conversion Model
-│   ├── recommender.py      # Recommendation Algorithm
-│   └── requirements.txt    # Python Dependencies
+├── backend/                          # Python Backend Service
+│   ├── core/                         # Core Logic Modules
+│   │   ├── __init__.py
+│   │   ├── database.py               # Vector Database Management
+│   │   ├── pipeline.py               # Recommendation Pipeline Logic
+│   │   └── services.py               # Crawler, Preprocessing & Model Services
+│   ├── app.py                        # FastAPI Main Application
+│   ├── danmu_transformer_best.pth    # Trained Transformer Model Weights
+│   ├── requirements.txt              # Python Dependencies
+│   └── transformer_vector_danmu.json # Pre-computed Video Vector Database
 │
-└── extension/              # Chrome Extension
-    ├── manifest.json       # Extension Configuration
-    ├── popup.html          # Popup UI
-    ├── popup.js            # Extension Logic
-    ├── content.js          # Content Script
-    └── icons/              # Extension Icons
+└── extension/                        # Chrome Extension
+    ├── icons/                        # Extension Icons
+    ├── manifest.json                 # Extension Configuration
+    ├── popup.html                    # Popup UI
+    └── popup.js                      # Extension Logic
 ```
 
 ---
 
 ## Tech Stack
 
-- **Backend**: Python 3.8+ / Flask / Transformers / scikit-learn
-- **Extension**: JavaScript / Chrome Extension API
-- **Data**: Bilibili Danmu API / Self-built Video Vector Database
+- **Backend**: Python 3.8+ / **FastAPI** / **Uvicorn**
+- **AI & Data**: **PyTorch** / Transformers / scikit-learn / SnowNLP / NumPy
+- **Extension**: JavaScript / HTML / CSS
+- **Data Source**: Bilibili Danmu XML / Local JSON Vector Database
 
 ---
 
@@ -53,28 +56,40 @@ DanmuEmoRec/
 
 ### Backend Deployment
 
-```bash
-cd backend
-pip install -r requirements.txt
-python app.py
-# Service will run on http://localhost:5000
-```
+1.  **Install Dependencies**:
+
+    ```bash
+    cd backend
+    pip install -r requirements.txt
+    ```
+
+2.  **Check Resources**:
+    Ensure `danmu_transformer_best.pth` and `transformer_vector_danmu.json` are present in the `backend` directory.
+
+3.  **Run Server**:
+
+    ```bash
+    python app.py
+    # OR using uvicorn directly:
+    # uvicorn app:app --reload --port 8000
+    ```
+
+    *Service will run on http://127.0.0.1:8000*
 
 ### Extension Installation
 
-1. Open Chrome browser and navigate to `chrome://extensions/`
-2. Enable "Developer mode" in the top-right corner
-3. Click "Load unpacked" and select the `extension` folder
+1.  Open Chrome browser and navigate to `chrome://extensions/`.
+2.  Enable **"Developer mode"** in the top-right corner.
+3.  Click **"Load unpacked"** and select the `extension` folder from this project.
 
 ---
 
 ## Usage
 
-1. **Watch a video**: Play any video on Bilibili
-2. **Click Recommend**: Click the extension icon in the top-right corner of the browser
-3. **Wait for analysis**: The extension automatically extracts the BV ID and sends it to the backend
-4. **View results**: See the 5 sentiment-similar video recommendations in the popup window
-5. **Click to watch**: Click video links to open them in new tabs
+1.  **Watch a video**: Play any video on Bilibili.
+2.  **Click Recommend**: Click the extension icon in the top-right corner of the browser.
+3.  **Wait for analysis**: The extension extracts the BV ID and requests recommendations from the local backend.
+4.  **View results**: See the sentiment-similar video recommendations in the popup window.
 
 ---
 
@@ -82,15 +97,27 @@ python app.py
 
 ### Get Recommended Videos
 
-- **URL**: `POST /api/recommend`
-- **Parameters**: `{"bv": "BV1xx411c7mD"}`
-- **Response**: 
+- **URL**: `GET /recommend`
+
+- **Parameters**: `?bv=BV1xx411c7mD`
+
+- **Example Request**:
+  `http://127.0.0.1:8000/recommend?bv=BV1xx411c7mD`
+
+- **Response Example**:
+
 ```json
 {
+  "code": 200,
   "status": "success",
-  "current_video": {...},
-  "recommendations": [
-    {"title": "...", "bv": "BV1...", "similarity": 0.87}
+  "data": [
+    {
+      "title": "Video Title Example",
+      "bv": "BV1vz4y1...",
+      "link": "https://www.bilibili.com/video/BV1vz4y1...",
+      "score": 0.95
+    }
+    // ... more results
   ]
 }
 ```
@@ -103,11 +130,12 @@ python app.py
 
 - Python 3.8+
 - Chrome 88+
+- (Optional) CUDA-enabled GPU for faster model inference
 
 ---
 
 ## Notes
 
-- ⚠️ **API Rate Limit**: Bilibili Danmu API has access frequency limits. It is recommended to add request delays
-- 🔑 **Data Privacy**: The extension only extracts the video BV ID and does not collect personal user information
-- 📄 **Copyright Notice**: This project is for educational and research purposes only. Please comply with Bilibili's Terms of Service
+- ⚠️ **API Rate Limit**: The crawler component interacts with Bilibili's public interfaces. Use responsibly.
+- 🔑 **Local Database**: The system relies on `transformer_vector_danmu.json` for fast lookups. If a video is not in the DB, it will trigger real-time crawling and inference (slower).
+- 📄 **Copyright Notice**: This project is for educational and research purposes only.
