@@ -52,6 +52,25 @@ DanmuEmoRec/
 
 ---
 
+## Core Dependencies
+
+* **FastAPI & Uvicorn**:
+Used to build the high-performance RESTful API. **FastAPI** handles the `/recommend` endpoint logic and data validation, while **Uvicorn** serves the application as an asynchronous ASGI server.
+* **Requests**:
+The core of the crawler module. It is responsible for sending HTTP requests to Bilibili's servers to fetch raw Danmu (XML) data based on the video's `cid`.
+* **Jieba**:
+Performs Chinese text segmentation (tokenization) on the raw danmu text, cleaning and preparing the data for sentiment analysis.
+* **SnowNLP**:
+Used for initial sentiment scoring. It calculates a probabilistic sentiment value (0 to 1) for each danmu comment, transforming textual data into a numerical sentiment time-series.
+* **PyTorch**:
+The heart of the inference engine. It loads the custom trained Transformer model (`danmu_transformer_best.pth`) to encode the variable-length sentiment sequences into fixed 128-dimensional feature vectors.
+* **NumPy**:
+Handles high-performance numerical array operations, primarily for managing the sentiment time-series data structures before they are converted to tensors.
+* **Scikit-learn & SciPy**:
+Power the recommendation logic. These libraries are used to compute **Cosine Similarity** (or Euclidean distance) between the current video's vector and the pre-computed vectors in the database to find the top 5 most similar matches.
+
+---
+
 ## Installation & Deployment
 
 ### Backend Deployment

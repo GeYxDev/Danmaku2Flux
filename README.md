@@ -55,6 +55,25 @@ Arranged in data processing pipeline order:
 
 ---
 
+### 🛠 Key Dependencies
+
+* **PyTorch (`torch`)**:
+The core deep learning framework. It is used in `transformer_recommender.py` to construct, train, and inference the Transformer-based encoder, mapping variable-length sentiment sequences into fixed 128-dimensional embedding vectors.
+* **SnowNLP**:
+The sentiment analysis engine used in `snownlp_sentiment.py`. It calculates a probabilistic sentiment score (0-1) for every danmu comment, converting unstructured text into the numerical signals required by the model.
+* **Jieba**:
+Performs precise Chinese text segmentation (tokenization) in `data_preprocessing.py`. It is essential for filtering stop words and cleaning raw danmu text before sentiment analysis.
+* **Scikit-learn**:
+Powers the quality assurance tools in `check_embedding_quality.py`. It provides algorithms for **PCA** and **t-SNE** (dimensionality reduction) to analyze vector distributions, as well as metrics for cluster analysis.
+* **Matplotlib**:
+The visualization library used to generate diagnostic charts, including the training loss history (`loss_curve.png`) and the 2D vector embedding scatter plots (`emb_tsne.png`).
+* **NumPy & SciPy**:
+Handle high-performance numerical computing. **NumPy** manages the dense arrays for time-series data and vector matrices, while **SciPy** is utilized for computing distance metrics (e.g., Cosine Similarity) during quality checks.
+* **tqdm**:
+Enhances the Command Line Interface (CLI) experience by providing real-time progress bars for long-running tasks such as dataset preprocessing, sentiment batch scoring, and model training epochs.
+
+---
+
 ## 🔄 **Standard Running Workflow**
 
 **First-time Initialization:**
